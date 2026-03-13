@@ -26,6 +26,7 @@ ENEMY_SPEED_RAMP_PX_S_PER_SEC = {
     "HARD": 7.0,
 }
 POWERUP_DROP_CHANCE = 0.12  # chance on enemy kill
+POWERUP_MINUS_CHANCE = 0.20  # when a powerup spawns, chance it's a MINUS (rarer)
 POWERUP_SPAWN_MIN_MS = 4500
 POWERUP_SPAWN_MAX_MS = 8500
 POWERUP_SPEED_PX_S = 180
@@ -52,8 +53,6 @@ DIFFICULTY = {
     "HARD": {"spawn_rate": 20, "enemy_speed": (4, 8), "enemy_color": RED}
 }
 current_difficulty = "NORMAL"
-
-FIRE_MODES = [1, 2, 3, 4, "DOUBLE"]
 
 class Button:
     def __init__(self, x, y, width, height, text, color, hover_color, action=None):
@@ -93,7 +92,8 @@ class Player(pygame.sprite.Sprite):
         self.speed = PLAYER_SPEED
         self.shoot_delay = PLAYER_SHOOT_DELAY_MS
         self.last_shot = pygame.time.get_ticks()
-        self.fire_mode_idx = 0
+        self.bullet_count = 1
+        self.double_shot = False
 
     def update(self, dt):
         keys = pygame.key.get_pressed()
@@ -119,30 +119,43 @@ class Player(pygame.sprite.Sprite):
         if now - self.last_shot > self.shoot_delay:
             self.last_shot = now
 
-            mode = FIRE_MODES[self.fire_mode_idx]
-            if mode == "DOUBLE":
-                offsets = [-12, 12]
-            else:
-                n = int(mode)
+            def offsets_for_count(n):
                 spread = 24
-                if n == 1:
-                    offsets = [0]
-                else:
-                    offsets = [int(-spread + (2 * spread) * i / (n - 1)) for i in range(n)]
+                if n <= 1:
+                    return [0]
+                return [int(-spread + (2 * spread) * i / (n - 1)) for i in range(n)]
 
-            for off in offsets:
-                bullet = Bullet(self.rect.centerx + off, self.rect.top)
-                all_sprites.add(bullet)
-                bullets.add(bullet)
+            if self.double_shot:
+                for lane_off in (-14, 14):
+                    for off in offsets_for_count(self.bullet_count):
+                        bullet = Bullet(self.rect.centerx + lane_off + off, self.rect.top)
+                        all_sprites.add(bullet)
+                        bullets.add(bullet)
+            else:
+                for off in offsets_for_count(self.bullet_count):
+                    bullet = Bullet(self.rect.centerx + off, self.rect.top)
+                    all_sprites.add(bullet)
+                    bullets.add(bullet)
 
     def cycle_fire_mode(self):
-        self.fire_mode_idx = (self.fire_mode_idx + 1) % len(FIRE_MODES)
-        if self.fire_mode_idx == 0:
-            self.fire_mode_idx = len(FIRE_MODES) - 1
+        if self.double_shot:
+            return
+
+        if self.bullet_count < 4:
+            self.bullet_count += 1
+        else:
+            self.double_shot = True
+
+    def decrease_fire_mode(self):
+        if self.double_shot:
+            self.double_shot = False
+            return
+
+        if self.bullet_count > 1:
+            self.bullet_count -= 1
 
     def fire_mode_label(self):
-        mode = FIRE_MODES[self.fire_mode_idx]
-        return "DOUBLE" if mode == "DOUBLE" else f"x{mode}"
+        return f"DOUBLE x{self.bullet_count}" if self.double_shot else f"x{self.bullet_count}"
 
 class Enemy(pygame.sprite.Sprite):
     def __init__(self, speed_px_s):
@@ -180,13 +193,19 @@ class Bullet(pygame.sprite.Sprite):
             self.kill()
 
 class PowerUp(pygame.sprite.Sprite):
-    def __init__(self, x, y):
+    def __init__(self, x, y, kind="PLUS"):
         super().__init__()
         self.image = pygame.Surface((24, 24), pygame.SRCALPHA)
-        pygame.draw.circle(self.image, BLUE, (12, 12), 12)
-        pygame.draw.circle(self.image, WHITE, (12, 12), 12, 2)
-        pygame.draw.rect(self.image, WHITE, (11, 6, 2, 12))
-        pygame.draw.rect(self.image, WHITE, (6, 11, 12, 2))
+        self.kind = kind
+        if kind == "MINUS":
+            pygame.draw.circle(self.image, RED, (12, 12), 12)
+            pygame.draw.circle(self.image, WHITE, (12, 12), 12, 2)
+            pygame.draw.rect(self.image, WHITE, (6, 11, 12, 2))
+        else:
+            pygame.draw.circle(self.image, BLUE, (12, 12), 12)
+            pygame.draw.circle(self.image, WHITE, (12, 12), 12, 2)
+            pygame.draw.rect(self.image, WHITE, (11, 6, 2, 12))
+            pygame.draw.rect(self.image, WHITE, (6, 11, 12, 2))
         self.rect = self.image.get_rect(center=(x, y))
         self.speed_y = POWERUP_SPEED_PX_S
 
@@ -248,6 +267,12 @@ def start_game():
     
     player = Player()
     all_sprites.add(player)
+
+def spawn_powerup(x, y):
+    kind = "MINUS" if random.random() < POWERUP_MINUS_CHANCE else "PLUS"
+    p = PowerUp(x, y, kind=kind)
+    all_sprites.add(p)
+    powerups.add(p)
 
 def current_enemy_speed_px_s():
     base = ENEMY_BASE_SPEED_PX_S[current_difficulty]
@@ -353,9 +378,7 @@ while running:
         now_ms = pygame.time.get_ticks()
         if now_ms >= next_powerup_spawn_ms:
             next_powerup_spawn_ms = now_ms + random.randint(POWERUP_SPAWN_MIN_MS, POWERUP_SPAWN_MAX_MS)
-            p = PowerUp(random.randint(30, WIDTH - 30), random.randint(-120, -40))
-            all_sprites.add(p)
-            powerups.add(p)
+            spawn_powerup(random.randint(30, WIDTH - 30), random.randint(-120, -40))
 
         # Hits
         hits = pygame.sprite.groupcollide(mobs, bullets, True, True)
@@ -363,9 +386,7 @@ while running:
             score += 10
 
             if random.random() < POWERUP_DROP_CHANCE:
-                p = PowerUp(hit.rect.centerx, hit.rect.centery)
-                all_sprites.add(p)
-                powerups.add(p)
+                spawn_powerup(hit.rect.centerx, hit.rect.centery)
         
         # Player Hit
         hits = pygame.sprite.spritecollide(player, mobs, False)
@@ -380,8 +401,11 @@ while running:
         # Powerup pickup
         phits = pygame.sprite.spritecollide(player, powerups, True)
         if phits:
-            for _ in phits:
-                player.cycle_fire_mode()
+            for p in phits:
+                if getattr(p, "kind", "PLUS") == "MINUS":
+                    player.decrease_fire_mode()
+                else:
+                    player.cycle_fire_mode()
 
     elif state == "GAME_OVER":
         btn_menu.check_hover(mouse_pos)
