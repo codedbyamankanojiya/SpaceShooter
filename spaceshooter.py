@@ -9,6 +9,27 @@ pygame.init()
 WIDTH, HEIGHT = 800, 600
 FPS = 60
 
+# Gameplay tuning
+PLAYER_SPEED = 350  # px/sec
+PLAYER_SHOOT_DELAY_MS = 250
+BULLET_SPEED = 700  # px/sec
+ENEMY_SIZE = (40, 35)
+ENEMY_SPEED_CAP_PX_S = 320
+ENEMY_BASE_SPEED_PX_S = {
+    "EASY": 90,
+    "NORMAL": 130,
+    "HARD": 180,
+}
+ENEMY_SPEED_RAMP_PX_S_PER_SEC = {
+    "EASY": 3.0,
+    "NORMAL": 5.0,
+    "HARD": 7.0,
+}
+POWERUP_DROP_CHANCE = 0.12  # chance on enemy kill
+POWERUP_SPAWN_MIN_MS = 4500
+POWERUP_SPAWN_MAX_MS = 8500
+POWERUP_SPEED_PX_S = 180
+
 # Colors
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
@@ -18,11 +39,6 @@ BLUE = (50, 50, 255)
 YELLOW = (255, 255, 50)
 GRAY = (100, 100, 100)
 CYAN = (0, 255, 255)
-
-# Setup Display
-screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Space Shooter Deluxe")
-clock = pygame.time.Clock()
 
 # Fonts
 font_sm = pygame.font.Font(None, 24)
@@ -36,6 +52,8 @@ DIFFICULTY = {
     "HARD": {"spawn_rate": 20, "enemy_speed": (4, 8), "enemy_color": RED}
 }
 current_difficulty = "NORMAL"
+
+FIRE_MODES = [1, 2, 3, 4, "DOUBLE"]
 
 class Button:
     def __init__(self, x, y, width, height, text, color, hover_color, action=None):
@@ -72,16 +90,20 @@ class Player(pygame.sprite.Sprite):
         self.rect = self.image.get_rect()
         self.rect.centerx = WIDTH // 2
         self.rect.bottom = HEIGHT - 20
-        self.speed = 5
-        self.shoot_delay = 250
+        self.speed = PLAYER_SPEED
+        self.shoot_delay = PLAYER_SHOOT_DELAY_MS
         self.last_shot = pygame.time.get_ticks()
+        self.fire_mode_idx = 0
 
-    def update(self):
+    def update(self, dt):
         keys = pygame.key.get_pressed()
+        dx = 0
         if keys[pygame.K_LEFT]:
-            self.rect.x -= self.speed
+            dx -= self.speed * dt
         if keys[pygame.K_RIGHT]:
-            self.rect.x += self.speed
+            dx += self.speed * dt
+
+        self.rect.x += int(dx)
         
         # Boundary checks
         if self.rect.right > WIDTH:
@@ -89,37 +111,58 @@ class Player(pygame.sprite.Sprite):
         if self.rect.left < 0:
             self.rect.left = 0
 
+        if keys[pygame.K_SPACE]:
+            self.shoot()
+
     def shoot(self):
         now = pygame.time.get_ticks()
         if now - self.last_shot > self.shoot_delay:
             self.last_shot = now
-            bullet = Bullet(self.rect.centerx, self.rect.top)
-            all_sprites.add(bullet)
-            bullets.add(bullet)
+
+            mode = FIRE_MODES[self.fire_mode_idx]
+            if mode == "DOUBLE":
+                offsets = [-12, 12]
+            else:
+                n = int(mode)
+                spread = 24
+                if n == 1:
+                    offsets = [0]
+                else:
+                    offsets = [int(-spread + (2 * spread) * i / (n - 1)) for i in range(n)]
+
+            for off in offsets:
+                bullet = Bullet(self.rect.centerx + off, self.rect.top)
+                all_sprites.add(bullet)
+                bullets.add(bullet)
+
+    def cycle_fire_mode(self):
+        self.fire_mode_idx = (self.fire_mode_idx + 1) % len(FIRE_MODES)
+        if self.fire_mode_idx == 0:
+            self.fire_mode_idx = len(FIRE_MODES) - 1
+
+    def fire_mode_label(self):
+        mode = FIRE_MODES[self.fire_mode_idx]
+        return "DOUBLE" if mode == "DOUBLE" else f"x{mode}"
 
 class Enemy(pygame.sprite.Sprite):
-    def __init__(self):
+    def __init__(self, speed_px_s):
         super().__init__()
-        self.image = pygame.Surface((40, 35), pygame.SRCALPHA)
+        self.image = pygame.Surface(ENEMY_SIZE, pygame.SRCALPHA)
         color = DIFFICULTY[current_difficulty]["enemy_color"]
-        pygame.draw.ellipse(self.image, color, (0, 0, 40, 35))
+        pygame.draw.ellipse(self.image, color, (0, 0, ENEMY_SIZE[0], ENEMY_SIZE[1]))
         pygame.draw.circle(self.image, BLACK, (10, 10), 3) # Eye
         pygame.draw.circle(self.image, BLACK, (30, 10), 3) # Eye
         
         self.rect = self.image.get_rect()
         self.rect.x = random.randrange(WIDTH - self.rect.width)
         self.rect.y = random.randrange(-100, -40)
-        
-        speed_min, speed_max = DIFFICULTY[current_difficulty]["enemy_speed"]
-        self.speed_y = random.randrange(speed_min, speed_max + 1)
 
-    def update(self):
-        self.rect.y += self.speed_y
+        self.speed_y = float(speed_px_s)
+
+    def update(self, dt):
+        self.rect.y += int(self.speed_y * dt)
         if self.rect.top > HEIGHT + 10:
-            self.rect.x = random.randrange(WIDTH - self.rect.width)
-            self.rect.y = random.randrange(-100, -40)
-            speed_min, speed_max = DIFFICULTY[current_difficulty]["enemy_speed"]
-            self.speed_y = random.randrange(speed_min, speed_max + 1)
+            self.kill()
 
 class Bullet(pygame.sprite.Sprite):
     def __init__(self, x, y):
@@ -129,11 +172,27 @@ class Bullet(pygame.sprite.Sprite):
         self.rect = self.image.get_rect()
         self.rect.bottom = y
         self.rect.centerx = x
-        self.speed_y = -10
+        self.speed_y = -BULLET_SPEED
 
-    def update(self):
-        self.rect.y += self.speed_y
+    def update(self, dt):
+        self.rect.y += int(self.speed_y * dt)
         if self.rect.bottom < 0:
+            self.kill()
+
+class PowerUp(pygame.sprite.Sprite):
+    def __init__(self, x, y):
+        super().__init__()
+        self.image = pygame.Surface((24, 24), pygame.SRCALPHA)
+        pygame.draw.circle(self.image, BLUE, (12, 12), 12)
+        pygame.draw.circle(self.image, WHITE, (12, 12), 12, 2)
+        pygame.draw.rect(self.image, WHITE, (11, 6, 2, 12))
+        pygame.draw.rect(self.image, WHITE, (6, 11, 12, 2))
+        self.rect = self.image.get_rect(center=(x, y))
+        self.speed_y = POWERUP_SPEED_PX_S
+
+    def update(self, dt):
+        self.rect.y += int(self.speed_y * dt)
+        if self.rect.top > HEIGHT + 20:
             self.kill()
 
 class Star(pygame.sprite.Sprite):
@@ -147,8 +206,8 @@ class Star(pygame.sprite.Sprite):
         self.rect.y = random.randrange(HEIGHT)
         self.speed_y = random.randrange(1, 10)
 
-    def update(self):
-        self.rect.y += self.speed_y
+    def update(self, dt=0.0):
+        self.rect.y += self.speed_y * dt
         if self.rect.top > HEIGHT:
             self.rect.x = random.randrange(WIDTH)
             self.rect.y = random.randrange(-20, -5)
@@ -157,12 +216,15 @@ class Star(pygame.sprite.Sprite):
 state = "MENU" # MENU, DIFFICULTY, PLAYING, GAME_OVER
 score = 0
 spawn_timer = 0
+game_time_s = 0.0
+next_powerup_spawn_ms = 0
 
 # Sprite Groups
 all_sprites = pygame.sprite.Group()
 mobs = pygame.sprite.Group()
 bullets = pygame.sprite.Group()
 stars = pygame.sprite.Group()
+powerups = pygame.sprite.Group()
 player = None
 
 # create stars once
@@ -171,18 +233,29 @@ for i in range(100):
     stars.add(s)
 
 def start_game():
-    global state, score, player, spawn_timer
+    global state, score, player, spawn_timer, game_time_s, next_powerup_spawn_ms
     state = "PLAYING"
     score = 0
     spawn_timer = 0
+    game_time_s = 0.0
+    next_powerup_spawn_ms = pygame.time.get_ticks() + random.randint(POWERUP_SPAWN_MIN_MS, POWERUP_SPAWN_MAX_MS)
     
     # Clear game sprites but keep stars
     all_sprites.empty()
     mobs.empty()
     bullets.empty()
+    powerups.empty()
     
     player = Player()
     all_sprites.add(player)
+
+def current_enemy_speed_px_s():
+    base = ENEMY_BASE_SPEED_PX_S[current_difficulty]
+    ramp = ENEMY_SPEED_RAMP_PX_S_PER_SEC[current_difficulty]
+    speed = base + ramp * game_time_s
+    speed = min(speed, ENEMY_SPEED_CAP_PX_S)
+    jitter = random.uniform(-0.15, 0.15) * speed
+    return max(40.0, speed + jitter)
 
 def set_difficulty(diff):
     global current_difficulty
@@ -222,8 +295,11 @@ btn_menu = Button(WIDTH//2 - 100, 400, 200, 50, "Main Menu", BLUE, (100, 100, 25
 
 # Main Loop
 running = True
+clock = pygame.time.Clock()
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Space Shooter Deluxe")
 while running:
-    clock.tick(FPS)
+    dt = clock.tick(FPS) / 1000.0
     
     # 1. Event Handling
     events = pygame.event.get()
@@ -240,8 +316,6 @@ while running:
             btn_hard.handle_event(event)
         elif state == "PLAYING":
             if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
-                    player.shoot()
                 if event.key == pygame.K_ESCAPE:
                     state = "MENU"
         elif state == "GAME_OVER":
@@ -251,7 +325,7 @@ while running:
     mouse_pos = pygame.mouse.get_pos()
     
     # Always update stars
-    stars.update()
+    stars.update(dt)
 
     if state == "MENU":
         btn_start.check_hover(mouse_pos)
@@ -263,30 +337,51 @@ while running:
         btn_hard.check_hover(mouse_pos)
 
     elif state == "PLAYING":
-        all_sprites.update()
+        game_time_s += dt
+        all_sprites.update(dt)
 
         # Spawning Logic
         spawn_timer += 1
         rate = DIFFICULTY[current_difficulty]["spawn_rate"]
         if spawn_timer >= rate:
             spawn_timer = 0
-            m = Enemy()
+            m = Enemy(current_enemy_speed_px_s())
             all_sprites.add(m)
             mobs.add(m)
+
+        # Timed powerup spawns (in addition to drop chance)
+        now_ms = pygame.time.get_ticks()
+        if now_ms >= next_powerup_spawn_ms:
+            next_powerup_spawn_ms = now_ms + random.randint(POWERUP_SPAWN_MIN_MS, POWERUP_SPAWN_MAX_MS)
+            p = PowerUp(random.randint(30, WIDTH - 30), random.randint(-120, -40))
+            all_sprites.add(p)
+            powerups.add(p)
 
         # Hits
         hits = pygame.sprite.groupcollide(mobs, bullets, True, True)
         for hit in hits:
             score += 10
-            # Respawn
-            m = Enemy()
-            all_sprites.add(m)
-            mobs.add(m)
+
+            if random.random() < POWERUP_DROP_CHANCE:
+                p = PowerUp(hit.rect.centerx, hit.rect.centery)
+                all_sprites.add(p)
+                powerups.add(p)
         
         # Player Hit
         hits = pygame.sprite.spritecollide(player, mobs, False)
         if hits:
             state = "GAME_OVER"
+
+        # Enemy passed the player -> game over
+        passed = any(m.rect.top > player.rect.bottom for m in mobs.sprites())
+        if passed:
+            state = "GAME_OVER"
+
+        # Powerup pickup
+        phits = pygame.sprite.spritecollide(player, powerups, True)
+        if phits:
+            for _ in phits:
+                player.cycle_fire_mode()
 
     elif state == "GAME_OVER":
         btn_menu.check_hover(mouse_pos)
@@ -312,6 +407,7 @@ while running:
         all_sprites.draw(screen)
         draw_text(f"SCORE: {score}", font_md, WHITE, screen, WIDTH//2, 30)
         draw_text(f"Level: {current_difficulty}", font_sm, GRAY, screen, 60, 20)
+        draw_text(f"Power: {player.fire_mode_label()}", font_sm, GRAY, screen, WIDTH - 150, 20, align="left")
 
     elif state == "GAME_OVER":
         draw_text("GAME OVER", font_lg, RED, screen, WIDTH//2, 150)
